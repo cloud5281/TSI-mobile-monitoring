@@ -7,19 +7,32 @@ Chart.register(...registerables, zoomPlugin);
 
 const Config = (() => {
     const urlParams = new URLSearchParams(window.location.search);
-    const firebaseId = urlParams.get('id') || "real-time-gps-84c8a"; 
+    const firebaseId = urlParams.get('id') || "tsi-mobile-monitoring"; 
     const projectPath = urlParams.get('path') || "test_project";
+
+    let dynamicKey = urlParams.get('key');
+    if (dynamicKey) {
+        localStorage.setItem('saved_api_key', dynamicKey);
+    } else {
+        dynamicKey = localStorage.getItem('saved_api_key');
+    }
+    if (!dynamicKey) {
+        dynamicKey = prompt("未偵測到 API Key，請輸入 Firebase API Key:");
+        if (dynamicKey) localStorage.setItem('saved_api_key', dynamicKey);
+    }
+
     if (!firebaseId || !projectPath) {
         alert("網址參數錯誤");
-    } else {
-        window.history.replaceState({}, document.title, window.location.pathname);
-    }
+    } 
     return {
         firebaseProjectId: firebaseId,
-        apiKey: urlParams.get('key') || "AIzaSyCjPnL5my8NsG7XYCbABGh45KtKM9s4SlI",
+        apiKey: dynamicKey,
         dbRootPath: projectPath, 
-        wifiIp: "", gpsPort: "", concUnit: "", concPort: "",
-        instrument: "TSI", // 🔥 新增儀器變數
+        gpsIp: "", gpsPort: "", 
+        concInstrument: "TSI",
+        concSerial: "", concBaudrate: 9600,
+        concIp: "", concPort: "",
+        concUnit: "",
         timeDelay: 0, 
         dbURL: urlParams.get('db') || null,
         ZOOM_LEVEL: 17, 
@@ -28,7 +41,7 @@ const Config = (() => {
 })();
 
 class MapManager {
-    constructor() {
+    constructor(initLat = 25.0330, initLon = 121.5654) {
         const osmLayer = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
             attribution: '© OpenStreetMap contributors'
         });
@@ -38,7 +51,7 @@ class MapManager {
         });
 
         this.map = L.map('map', {
-            center: [25.0330, 121.5654],
+            center: [initLat, initLon],
             zoom: Config.ZOOM_LEVEL,
             layers: [osmLayer],
             zoomControl: true
@@ -439,10 +452,13 @@ class UIManager {
             btnSaveBackend: document.getElementById('btn-save-backend'),
             backendInputs: {
                 project: document.getElementById('set-project-id'),
-                wifi_ip: document.getElementById('set-gps-ip'),
-                port: document.getElementById('set-gps-port'),
+                gps_ip: document.getElementById('set-gps-ip'),
+                gps_port: document.getElementById('set-gps-port'),
+                conc_instrument: document.getElementById('set-conc-instrument'),
+                conc_serial: document.getElementById('set-conc-serial'),
+                conc_baudrate: document.getElementById('set-conc-baudrate'), 
+                conc_ip: document.getElementById('set-conc-ip'),
                 conc_port: document.getElementById('set-conc-port'),
-                instrument: document.getElementById('set-instrument'), // 🔥 替換為儀器選單
                 time_delay: document.getElementById('set-time-delay')
             },
             btnStart: document.getElementById('btn-start'),
@@ -490,6 +506,22 @@ class UIManager {
 
         if (window.innerWidth <= 768 && this.els.mainPanel) {
             this.els.mainPanel.classList.add('collapsed');
+        }
+    }
+
+    // 根據下拉選單(instrument)切換顯示/隱藏
+    toggleInstrumentFields() {
+        if (!this.els.backendInputs.conc_instrument) return;
+        const inst = this.els.backendInputs.conc_instrument.value;
+        const pidFields = document.querySelectorAll('.pid-field');
+        const tsiFields = document.querySelectorAll('.tsi-field');
+        
+        if (inst === 'PID') {
+            pidFields.forEach(el => el.classList.remove('hidden'));
+            tsiFields.forEach(el => el.classList.add('hidden'));
+        } else {
+            pidFields.forEach(el => el.classList.add('hidden'));
+            tsiFields.forEach(el => el.classList.remove('hidden'));
         }
     }
 
@@ -867,15 +899,19 @@ class UIManager {
 
     syncConfigFromBackend(data) {
         if (!data) return;
-        Config.wifiIp = data.wifi_ip || ""; 
+        Config.gpsIp = data.gps_ip || ""; 
         Config.gpsPort = data.gps_port || ""; 
-        Config.concUnit = data.conc_unit || "";
+
+        Config.concInstrument = data.conc_instrument || "TSI"; // 🔥 接收儀器名稱
+        Config.concSerial = data.conc_serial || "";
+        Config.concBaudrate = data.conc_baudrate || 9600;
+        Config.concIp = data.conc_ip || "";
         Config.concPort = data.conc_port || "";
-        Config.instrument = data.instrument || "TSI"; // 🔥 接收儀器名稱
+        Config.concUnit = data.conc_unit || "";
+
         Config.timeDelay = data.time_delay !== undefined ? data.time_delay : 0; 
         
         if (!this.els.modal.classList.contains('hidden')) this.fillSettingsInputs();
-        if (this.chartTitleTextEl) this.chartTitleTextEl.innerText = `歷史濃度趨勢${Config.concUnit ? ` (${Config.concUnit})` : ""}`;
         
         if (this.els.thresholdTitle) {
             const unitText = Config.concUnit ? ` (${Config.concUnit})` : "";
@@ -906,25 +942,33 @@ class UIManager {
     
     fillSettingsInputs() { 
         this.els.backendInputs.project.value = Config.dbRootPath; 
-        this.els.backendInputs.wifi_ip.value = Config.wifiIp; 
-        this.els.backendInputs.port.value = Config.gpsPort; 
-        if (this.els.backendInputs.instrument) this.els.backendInputs.instrument.value = Config.instrument; // 🔥 自動選擇目前的儀器
-        if (this.els.backendInputs.time_delay) this.els.backendInputs.time_delay.value = Config.timeDelay; 
+        this.els.backendInputs.gps_ip.value = Config.gpsIp; 
+        this.els.backendInputs.gps_port.value = Config.gpsPort;
+
+        if (this.els.backendInputs.conc_instrument) {
+            this.els.backendInputs.conc_instrument.value = Config.concInstrument; 
+            this.toggleInstrumentFields(); // 確保每次打開時，顯示的是正確儀器的欄位
+        }
+
+        if (this.els.backendInputs.conc_baudrate) this.els.backendInputs.conc_baudrate.value = Config.concBaudrate;
+        if (this.els.backendInputs.conc_ip) this.els.backendInputs.conc_ip.value = Config.concIp;
+        if (this.els.backendInputs.conc_port) this.els.backendInputs.conc_port.value = Config.concPort;
+        if (this.els.backendInputs.time_delay) this.els.backendInputs.time_delay.value = Config.timeDelay;
         
-        if (Config.concPort && this.els.backendInputs.conc_port) {
+        if (this.els.backendInputs.conc_serial) {
             let exists = false;
-            for (let i = 0; i < this.els.backendInputs.conc_port.options.length; i++) {
-                if (this.els.backendInputs.conc_port.options[i].value === Config.concPort) {
-                    exists = true; break;
+            for (let i = 0; i < this.els.backendInputs.conc_serial.options.length; i++) {
+                if (this.els.backendInputs.conc_serial.options[i].value === Config.concSerial) {
+                    exists = true; 
+                    break;
                 }
             }
-            if (!exists) {
-                const opt = document.createElement('option');
-                opt.value = Config.concPort;
-                opt.innerText = Config.concPort + " (目前設定)";
-                this.els.backendInputs.conc_port.appendChild(opt);
+            if (exists) {
+                this.els.backendInputs.conc_serial.value = Config.concSerial;
             }
-            this.els.backendInputs.conc_port.value = Config.concPort;
+            else {
+                this.els.backendInputs.conc_serial.selectedIndex = 0;
+            }
         }
     }
 
@@ -1002,22 +1046,38 @@ class UIManager {
     bindEvents() {
         this.els.btnOpenSettings.addEventListener('click', () => { this.fillSettingsInputs(); this.els.modal.classList.remove('hidden'); });
         this.els.btnCloseModal.addEventListener('click', () => { this.els.modal.classList.add('hidden'); });
+        if (this.els.backendInputs.conc_instrument) {
+            this.els.backendInputs.conc_instrument.addEventListener('change', () => this.toggleInstrumentFields());
+        }
         
         this.els.btnSaveBackend.addEventListener('click', () => {
-            const p = this.els.backendInputs.project.value.trim(); 
-            const i = this.els.backendInputs.wifi_ip.value.trim(); 
-            const pt = this.els.backendInputs.port.value.trim(); 
-            const inst = this.els.backendInputs.instrument ? this.els.backendInputs.instrument.value : "TSI"; // 🔥 改抓 instrument
-            const td = this.els.backendInputs.time_delay ? this.els.backendInputs.time_delay.value.trim() : ""; 
-            const cp = this.els.backendInputs.conc_port ? this.els.backendInputs.conc_port.value : "";
-            
             const updateData = {}; 
-            if (p) updateData.project_name = p; 
-            if (i) updateData.wifi_ip = i; 
-            if (pt) updateData.gps_port = pt; 
-            if (inst) updateData.instrument = inst; // 🔥 傳回 instrument
-            if (td !== "") updateData.time_delay = parseFloat(td); 
+
+            const p = this.els.backendInputs.project.value.trim(); 
+
+            const gi = this.els.backendInputs.gps_ip.value.trim(); 
+            const gp = this.els.backendInputs.gps_port.value.trim(); 
+            
+            const inst = this.els.backendInputs.conc_instrument ? this.els.backendInputs.conc_instrument.value : "TSI"; 
+            updateData.conc_instrument = inst;
+            const cs = this.els.backendInputs.conc_serial ? this.els.backendInputs.conc_serial.value : "";
+            const cb = this.els.backendInputs.conc_baudrate ? this.els.backendInputs.conc_baudrate.value : "";
+            const ci = this.els.backendInputs.conc_ip ? this.els.backendInputs.conc_ip.value.trim() : "";
+            const cp = this.els.backendInputs.conc_port ? this.els.backendInputs.conc_port.value : "";
+            const td = this.els.backendInputs.time_delay ? this.els.backendInputs.time_delay.value.trim() : ""; 
+            
+            if (p) updateData.project_name = p;
+
+            if (gi) updateData.gps_ip = gi; 
+            if (gp) updateData.gps_port = gp; 
+            
+            if (inst) updateData.conc_instrument = inst;
+            if (cs) updateData.conc_serial = cs;
+            if (cb) updateData.conc_baudrate = cb;
+            if (ci) updateData.conc_ip = ci; 
             if (cp) updateData.conc_port = cp;
+            
+            if (td !== "") updateData.time_delay = parseFloat(td); 
             
             if (Object.keys(updateData).length === 0) { alert("未輸入變更"); return; } 
             
@@ -1347,8 +1407,117 @@ class UIManager {
     }
 
     triggerUploadProcess() { const input = document.createElement('input'); input.type = 'file'; input.accept = '.csv'; input.style.display = 'none'; input.onchange = (e) => { const file = e.target.files[0]; if (file) this.parseAndUploadCSV(file); }; document.body.appendChild(input); input.click(); document.body.removeChild(input); }
-    parseAndUploadCSV(file) { const btn = this.els.btnUpload; const originalText = btn.innerText; btn.disabled = true; btn.innerText = "上傳中..."; let projectName = file.name.replace(/\.csv$/i, "").trim(); if (!projectName) { alert("檔名無效"); btn.disabled = false; btn.innerText = originalText; return; } const reader = new FileReader(); reader.onload = (e) => { try { const text = e.target.result; const lines = text.split(/\r?\n/); if (lines.length < 2) throw new Error("CSV 為空"); const uploadData = {}; let count = 0; let lastRecord = null; for (let i = 1; i < lines.length; i++) { const line = lines[i].trim(); if (!line) continue; const cols = line.split(','); if (cols.length < 4) continue; const record = { timestamp: cols[0].trim(), lat: parseFloat(cols[1]), lon: parseFloat(cols[2]), conc: parseFloat(cols[3]), conc_unit: cols[4] ? cols[4].trim() : "", status: cols[5] ? cols[5].trim() : "" }; if (!isNaN(record.lat) && !isNaN(record.lon)) { const key = `record_${Date.now()}_${i}`; uploadData[key] = record; lastRecord = record; count++; } } if (count === 0) throw new Error("無有效數據"); const updates = {}; updates[`${projectName}/history`] = uploadData; if (lastRecord) updates[`${projectName}/latest`] = lastRecord; update(ref(this.db), updates).then(() => { const isDiff = (projectName !== Config.dbRootPath); if (isDiff) { alert(`上傳成功，切換至: ${projectName}`); this.setInterfaceMode('switching', "切換中", "gray", "offline"); set(ref(this.db, `${Config.dbRootPath}/control/config_update`), { project_name: projectName }); const url = new URL(window.location.href); url.searchParams.set('path', projectName); localStorage.setItem('should_fit_bounds', 'true'); window.location.href = url.toString(); } else { localStorage.setItem('should_fit_bounds', 'true'); alert("上傳成功"); location.reload(); } }).catch(err => { alert("上傳失敗: " + err.message); btn.disabled = false; btn.innerText = originalText; }); } catch (err) { alert("解析失敗: " + err.message); btn.disabled = false; btn.innerText = originalText; } }; reader.readAsText(file); }
-    async downloadHistoryAsCSV() { const btn = this.els.btnDownload; const originalText = btn.innerText; btn.disabled = true; btn.innerText = "下載中..."; try { const snapshot = await get(ref(this.db, `${Config.dbRootPath}/history`)); if (!snapshot.exists()) { alert("無歷史資料"); return; } const data = snapshot.val(); let csvContent = "\uFEFFTimestamp,Latitude,Longitude,Concentration,Unit,Status\n"; Object.values(data).forEach(row => { const t = row.timestamp || ""; const lat = row.lat || ""; const lon = row.lon || ""; const conc = row.conc || 0; const unit = row.conc_unit || Config.concUnit; const st = row.status || ""; csvContent += `${t},${lat},${lon},${conc},${unit},${st}\n`; }); const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' }); const url = URL.createObjectURL(blob); const link = document.createElement("a"); link.href = url; link.download = `${Config.dbRootPath}.csv`; link.click(); URL.revokeObjectURL(url); } catch (error) { console.error(error); alert("下載失敗"); } finally { btn.disabled = false; btn.innerText = originalText; } }
+    parseAndUploadCSV(file) { 
+        const btn = this.els.btnUpload; 
+        const originalText = btn.innerText; 
+        btn.disabled = true; btn.innerText = "上傳中..."; 
+        let projectName = file.name.replace(/\.csv$/i, "").trim(); 
+        if (!projectName) { alert("檔名無效"); btn.disabled = false; btn.innerText = originalText; return; } 
+        const reader = new FileReader(); 
+        reader.onload = (e) => { 
+            try { 
+                const text = e.target.result; 
+                const lines = text.split(/\r?\n/); 
+                if (lines.length < 2) throw new Error("CSV 為空"); const uploadData = {}; 
+                let count = 0; let lastRecord = null; 
+                for (let i = 1; i < lines.length; i++) { 
+                    const line = lines[i].trim(); 
+                    if (!line) continue; const cols = line.split(','); 
+                    if (cols.length < 4) continue; 
+
+                    let parsedLat = parseFloat(cols[1]);
+                    let parsedLon = parseFloat(cols[2]);
+                    let parsedConc = parseFloat(cols[3]);
+                    const record = { 
+                        timestamp: cols[0].trim(), 
+                        lat: isNaN(parsedLat) ? null : parsedLat, 
+                        lon: isNaN(parsedLon) ? null : parsedLon, 
+                        conc: isNaN(parsedConc) ? null : parsedConc,
+                        conc_unit: cols[4] ? cols[4].trim() : "", 
+                        status: cols[5] ? cols[5].trim() : "" 
+                    }; 
+                    if (record.timestamp) { 
+                        const key = `record_${Date.now()}_${i}`; 
+                        uploadData[key] = record; 
+                        if (record.lat !== null && record.lon !== null) {
+                            lastRecord = record; 
+                        } 
+                        count++; 
+                    } 
+                } 
+                if (count === 0) throw new Error("無有效數據"); 
+
+                const updates = {}; 
+                updates[`${projectName}/history`] = uploadData; 
+                if (lastRecord) updates[`${projectName}/latest`] = lastRecord; 
+
+                update(ref(this.db), updates).then(() => { 
+                    const isDiff = (projectName !== Config.dbRootPath); 
+                    if (isDiff) { 
+                        alert(`上傳成功，切換至: ${projectName}`); 
+                        this.setInterfaceMode('switching', "切換中", "gray", "offline"); 
+                        set(ref(this.db, `${Config.dbRootPath}/control/config_update`), { project_name: projectName }); 
+                        const url = new URL(window.location.href); 
+                        url.searchParams.set('path', projectName); 
+                        localStorage.setItem('should_fit_bounds', 'true'); 
+                        window.location.href = url.toString(); 
+                    } 
+                    else { 
+                        localStorage.setItem('should_fit_bounds', 'true'); 
+                        alert("上傳成功"); 
+                        location.reload(); 
+                    } 
+                }).catch(err => { 
+                    alert("上傳失敗: " + err.message); 
+                    btn.disabled = false; 
+                    btn.innerText = originalText;
+                }); 
+            } catch (err) { 
+                alert("解析失敗: " + err.message); 
+                btn.disabled = false; 
+                btn.innerText = originalText; 
+            } 
+        }; 
+        reader.readAsText(file); 
+    }
+
+    async downloadHistoryAsCSV() { 
+        const btn = this.els.btnDownload;
+        const originalText = btn.innerText; 
+        btn.disabled = true; 
+        btn.innerText = "下載中..."; 
+        try { 
+            const snapshot = await get(ref(this.db, `${Config.dbRootPath}/history`)); 
+            if (!snapshot.exists()) { alert("無歷史資料"); return; } 
+            const data = snapshot.val(); 
+
+            let csvContent = "\uFEFFtimestamp,lat,lon,conc,conc_unit,status\n"; 
+           
+            Object.values(data).forEach(row => { 
+                const t = row.timestamp || ""; 
+                const lat = (row.lat !== undefined && row.lat !== null) ? row.lat : ""; 
+                const lon = (row.lon !== undefined && row.lon !== null) ? row.lon : ""; 
+                const conc = (row.conc !== undefined && row.conc !== null) ? row.conc : "";
+                const unit = row.conc_unit || Config.concUnit; 
+                const st = row.status || ""; 
+                csvContent += `${t},${lat},${lon},${conc},${unit},${st}\n`; 
+            }); 
+            
+            const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' }); 
+            const url = URL.createObjectURL(blob); 
+            const link = document.createElement("a"); 
+            link.href = url; link.download = `${Config.dbRootPath}.csv`; 
+            link.click(); 
+            URL.revokeObjectURL(url); 
+        } catch (error) { 
+            console.error(error); 
+            alert("下載失敗"); 
+        } finally { 
+            btn.disabled = false; 
+            btn.innerText = originalText; 
+        } 
+    }
+
     toggleRecordingCommand() { set(ref(this.db, `${Config.dbRootPath}/control/command`), this.isRecording ? "stop" : "start"); }
     startClock() { setInterval(() => this.els.time.innerText = new Date().toLocaleTimeString('zh-TW', { hour12: false }), 1000); }
     getColor(value) { if (value < this.thresholds.a) return Config.COLORS.GREEN; if (value < this.thresholds.b) return Config.COLORS.YELLOW; if (value < this.thresholds.c) return Config.COLORS.ORANGE; return Config.COLORS.RED; }
@@ -1387,7 +1556,19 @@ async function main() {
     const firebaseConfig = { apiKey: Config.apiKey, authDomain: `${Config.firebaseProjectId}.firebaseapp.com`, databaseURL: Config.dbURL || `https://${Config.firebaseProjectId}-default-rtdb.asia-southeast1.firebasedatabase.app`, projectId: Config.firebaseProjectId };
     const app = initializeApp(firebaseConfig);
     const db = getDatabase(app);
-    const mapManager = new MapManager();
+    let initLat = 25.0330;
+    let initLon = 121.5654;
+    try {
+        const snap = await get(ref(db, `${Config.dbRootPath}/latest`));
+        if (snap.exists() && snap.val().lat != null && snap.val().lon != null) {
+            initLat = snap.val().lat;
+            initLon = snap.val().lon;
+        }
+    } catch (e) {
+        console.warn("無法取得初始座標", e);
+    }
+    
+    const mapManager = new MapManager(initLat, initLon);
     const uiManager = new UIManager(mapManager, db);
     let backendState = 'offline';
     let lastGpsData = null;
@@ -1396,32 +1577,32 @@ async function main() {
 
     onValue(ref(db, `${Config.dbRootPath}/status/available_ports`), (snapshot) => {
         const ports = snapshot.val() || [];
-        const selectEl = document.getElementById('set-conc-port');
+        const selectEl = document.getElementById('set-conc-serial');
         if (selectEl) {
-            const currentVal = selectEl.value || Config.concPort;
+            const currentVal = selectEl.value;
             selectEl.innerHTML = '';
+
             if (ports.length > 0) {
                 ports.forEach(p => {
                     const opt = document.createElement('option');
                     opt.value = p;
-                    opt.innerText = p;
+                    opt.innerText = (p === Config.concSerial) ? `${p} (目前設定)` : p;
                     selectEl.appendChild(opt);
                 });
                 
-                let exists = ports.includes(currentVal);
-                if (!exists && currentVal) {
-                    const opt = document.createElement('option');
-                    opt.value = currentVal;
-                    opt.innerText = currentVal + " (目前設定)";
-                    selectEl.appendChild(opt);
+                if (ports.includes(currentSelected)) {
+                    selectEl.value = currentSelected; // 維持使用者剛才選的
+                } else if (ports.includes(Config.concSerial)) {
+                    selectEl.value = Config.concSerial; // 顯示 config 裡面儲存的
+                } else {
+                    selectEl.selectedIndex = 0; // 若都沒中，預設選單純的第一個設備
                 }
-                selectEl.value = currentVal;
             } else {
                 const opt = document.createElement('option');
-                opt.value = currentVal || "";
-                opt.innerText = currentVal ? currentVal + " (未偵測到設備)" : "未偵測到設備";
+                opt.value = "";
+                opt.innerText = "未偵測到設備";
                 selectEl.appendChild(opt);
-                selectEl.value = currentVal || "";
+                selectEl.value = "";
             }
         }
     });
@@ -1444,7 +1625,6 @@ async function main() {
 
             if (!hasInitialCentered && lastValidPosition) {
                 mapManager.updateCurrentPosition(lastValidPosition.lat, lastValidPosition.lon, true);
-                mapManager.map.setView([lastValidPosition.lat, lastValidPosition.lon], Config.ZOOM_LEVEL);
                 hasInitialCentered = true; 
             }
 
